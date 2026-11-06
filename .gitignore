@@ -5,10 +5,15 @@
 # an input to this build (they are its sub-projects), not an output. Putting them
 # there made `clean` delete the thing it was about to build.
 packs/
-modules.json
-MACRO_REFS.txt
 build/
 .gradle/
+
+# `modules.json` IS committed, unlike the packs it describes. It is the baseline the
+# upstream canary diffs against: a split that silently loses a module or moves ids
+# into the wrong pack still passes verification, and the only way to notice is to
+# compare against a layout a human looked at once. `MACRO_REFS.txt` is committed for
+# the same reason - it is a short list of ids that cannot be resolved statically and
+# that a reader should know about.
 
 # Editor / OS noise
 .idea/
