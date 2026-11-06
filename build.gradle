@@ -45,9 +45,12 @@ ext {
     packFormat = 121
     minecraftVersion = '26.3'
 
-    // The range a Fabric loader will accept. Kept in one place so the twenty-six
-    // manifests cannot drift apart.
-    minecraftRange = '>=1.21.9'
+    // The version predicate the loader checks, not the pack format. The user's
+    // server reports itself as 26.3; whether that is "1.21.9 and later" under the
+    // old scheme or a new major is not something to guess, so the pin is on the
+    // data pack instead - pack.mcmeta's min_format/max_format is what actually
+    // decides whether the game runs these files, and it says 121.
+    minecraftRange = '*'
     loaderRange = '>=0.16.0'
 
     // Single source of truth for the version in every fabric.mod.json and every
@@ -199,16 +202,22 @@ subprojects {
             // The data pack's own compatibility is pack.mcmeta's job; putting
             // packFormat in here would make the loader reject the mod on a
             // version it can actually run.
-            // `fabric-resource-loader-v0` is the mod that makes the game read the
-            // `data/` tree out of a mod jar. It is not part of the loader; it ships
-            // in Fabric API. Without it the mods load, report healthy, and do
-            // nothing at all - no error, no data pack, no engine. Declaring it as a
-            // dependency turns that silent nothing into a clear "requires
-            // fabric-api" at startup.
+            // The engine's content is a data pack inside the jar, and reading a
+            // mod jar's `data/` tree is not something the loader does - it is
+            // `fabric-resource-loader`, which ships in Fabric API. Without it the
+            // mods load, report healthy, and do nothing at all: no data pack, no
+            // engine, no error.
+            //
+            // The dependency is on `fabric-api`, not on
+            // `fabric-resource-loader-v0`. Both ids are real (verified against
+            // 0.165.2+26.3, where the module is `fabric-resource-loader-v0` and
+            // there is also a `-v1`), and naming a specific module ties this
+            // project to a module name Fabric API is free to retire. The umbrella
+            // id is the one that survives that.
             def depends = [
-                    "fabricloader"            : loaderRange,
-                    "minecraft"               : mcRange,
-                    "fabric-resource-loader-v0": "*",
+                    "fabricloader": loaderRange,
+                    "minecraft"   : mcRange,
+                    "fabric-api"  : "*",
             ]
             // Every module calls me_core_module:core/internal/..., so the core mod
             // must be installed. The core depends on nothing: deleting any module

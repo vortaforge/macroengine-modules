@@ -91,9 +91,14 @@ me_cb_module-1.0.0.jar
 Install it by dropping it into the world's or profile's `mods/` folder.
 
 **Fabric API is required.** The mod jar's `data/` tree is read by
-`fabric-resource-loader-v0`, which ships in Fabric API, not in the loader — this
-is declared in every manifest's `depends`, so a missing Fabric API stops the game
+`fabric-resource-loader`, which ships in Fabric API, not in the loader — this is
+declared in every manifest's `depends`, so a missing Fabric API stops the game
 with a readable message instead of loading 26 mods that silently do nothing.
+
+The dependency names `fabric-api`, the umbrella id, not a specific module. The
+module is `fabric-resource-loader-v0` as of Fabric API `0.165.2+26.3` (there is
+also a `-v1`), and pinning a module name ties this project to something Fabric API
+is free to retire.
 
 The `data/` layout is identical to a `datapacks/` folder, so the same jar also
 works there, with no mod loader at all.
