@@ -1,5 +1,8 @@
 # macroengine-modules
 
+[![CI](https://github.com/vortaforge/macroengine-modules/actions/workflows/ci.yml/badge.svg)](https://github.com/vortaforge/macroengine-modules/actions/workflows/ci.yml)
+[![Upstream canary](https://github.com/vortaforge/macroengine-modules/actions/workflows/upstream-canary.yml/badge.svg)](https://github.com/vortaforge/macroengine-modules/actions/workflows/upstream-canary.yml)
+
 **macroEngine**, split from one data pack into **a core plus independent modules**.
 The arrangement mirrors Fabric API: the core carries the engine, each module
 attaches to it through *hook tags*, and the core never names a module.
@@ -91,6 +94,42 @@ loads without core**, but core loads and runs on its own.
 | `me_tui_module` | 8 | text UI |
 | `me_macro_module` | 5 | macro helpers |
 | `me_diagnostics_module` | 2 | diagnostics |
+
+## Releases and CI
+
+Releases are built from tags, not from a working directory:
+
+```bash
+git tag -a v1.0.0 -m "macroEngine modules 1.0.0"
+git push origin v1.0.0
+```
+
+That builds all 20 packs, stamps every `pack.mcmeta` with the tag's version,
+verifies the jars really carry it, and attaches them plus `SHA256SUMS.txt` to a
+GitHub Release. A tag that already has a release is refused rather than
+overwritten — people have downloaded those jars.
+
+| Workflow | Runs | Does |
+|---|---|---|
+| `ci.yml` | every push and PR | split, verify, prove determinism, build |
+| `release.yml` | on a `v*` tag | build, verify again, publish |
+| `upstream-canary.yml` | daily | re-split against today's upstream pack |
+
+The awkward thing all three have in common: `packs/` is not committed, so a fresh
+checkout has nothing to build. Each job fetches the source pack from
+`vortaforge/core` and re-runs the split. That is deliberate — the split is the
+product, and a CI that only built previously generated output would never catch a
+regression in the splitter itself.
+
+`modules.json` **is** committed, unlike the packs it describes. It is the canary's
+baseline: a split that silently loses a module or moves ids into the wrong pack
+still passes verification, because the result is a perfectly consistent layout
+that nobody reviewed. The only way to notice is to diff against the layout a human
+looked at once — which is what `tools/check_shape.py` does.
+
+Fork pull requests need no secrets: the source pack is public, so the token falls
+back to the workflow's own. If `vortaforge/core` ever goes private, set
+`SOURCE_READ_TOKEN`.
 
 ## Writing your own module
 
