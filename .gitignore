@@ -1,0 +1,14 @@
+# Generated packs. `tools/split.py` produces them from the source pack; they are
+# build output, not source, so they are not committed. The build regenerates them.
+build/
+.gradle/
+
+# Editor / OS noise
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
