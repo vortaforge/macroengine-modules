@@ -63,7 +63,11 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+          # Strict semver: no leading zeros. `v1.0.01` would otherwise be accepted
+          # and produce a jar called `me_core_module-1.0.01.jar`, which sorts and
+          # compares wrong against 1.0.1 forever and cannot be renamed without
+          # deleting a release people have already downloaded.
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
             echo "::error title=Bad tag::'${TAG}' is not of the form vMAJOR.MINOR.PATCH."
             echo "::error::Jars are named from this string, so a typo becomes a filename."
             exit 1
