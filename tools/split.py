@@ -801,11 +801,14 @@ class Split:
                 {"id": f"{module_namespace(module)}:{public_id}",
                  "wraps": f"{module_namespace(module)}:{normalise_area(source_id)}",
                  "contract": contract})
-        for module in MOVED_TO_PUBLIC:
+        # Sorted, not iterated raw: MOVED_TO_PUBLIC is a set, and Python randomises
+        # set order per process. Un-sorted, this list came out in a different order
+        # on every run, so modules.json had three different hashes in three runs
+        # from identical input - and the upstream canary diffs modules.json.
+        for module in sorted(MOVED_TO_PUBLIC):
             owner = module.split(":", 1)[0][len("me_"):-len("_module")]
-            dest = MOVED_DEST[module].split("/")[-1]
             published.setdefault(owner, []).append(
-                {"id": module.replace(f"core/internal/", ""), "moved": True})
+                {"id": module.replace("core/internal/", ""), "moved": True})
 
         # Hooks a module contributes to, taken from the authoritative table.
         hooks_by_module: dict[str, dict[str, list[str]]] = {}

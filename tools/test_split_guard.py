@@ -102,6 +102,53 @@ def test_in_place_clears_only_owned_paths():
         assert (project / "packs").is_dir(), "new packs are written"
 
 
+def test_manifest_is_reproducible():
+    """Two splits of the same input must produce the same modules.json bytes.
+
+    Run as two separate *processes*, not two calls in one. Python randomises set
+    and dict order per process via its hash seed, so a set being iterated
+    unsorted is stable inside one interpreter and different across two. An earlier
+    version of this test ran both splits in the same process and passed happily
+    while the real build produced three different hashes in three runs - the test
+    was measuring the wrong thing.
+
+    The bug it exists for: `publishes` was built by iterating a set.
+    """
+    import os
+    import subprocess
+    import sys
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = _source(root)
+        script = Path(__file__).resolve().parent / "split.py"
+
+        outputs = []
+        for name in ("a", "b"):
+            out = root / name
+            out.mkdir()
+            subprocess.run(
+                [sys.executable, str(script), "--source", str(src), "--out", str(out)],
+                check=True, capture_output=True,
+            )
+            outputs.append(out)
+
+        a = (outputs[0] / "modules.json").read_bytes()
+        b = (outputs[1] / "modules.json").read_bytes()
+        assert a == b, (
+            "modules.json differs between two runs of the same split in separate "
+            "processes; something is iterating a set or a directory unsorted"
+        )
+
+        for path in sorted((outputs[0] / "packs").rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(outputs[0] / "packs")
+            other = outputs[1] / "packs" / rel
+            assert other.is_file(), f"{rel} missing from the second run"
+            assert path.read_bytes() == other.read_bytes(), f"{rel} differs"
+
+
 def _run_all() -> int:
     failures = 0
     tests = [(n, f) for n, f in sorted(globals().items())

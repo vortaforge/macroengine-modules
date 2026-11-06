@@ -95,23 +95,11 @@
       "hooks": {},
       "publishes": [
         {
-          "id": "me_core_module:text/concat",
-          "moved": true
-        },
-        {
           "id": "me_core_module:ext/perm_count",
           "moved": true
         },
         {
-          "id": "me_core_module:ext/world/count_near",
-          "moved": true
-        },
-        {
-          "id": "me_core_module:text/safe",
-          "moved": true
-        },
-        {
-          "id": "me_core_module:text/lower",
+          "id": "me_core_module:ext/player/add_var_clamped",
           "moved": true
         },
         {
@@ -119,11 +107,19 @@
           "moved": true
         },
         {
-          "id": "me_core_module:text/split",
+          "id": "me_core_module:ext/world/count_near",
+          "moved": true
+        },
+        {
+          "id": "me_core_module:text/concat",
           "moved": true
         },
         {
           "id": "me_core_module:text/ctl",
+          "moved": true
+        },
+        {
+          "id": "me_core_module:text/lower",
           "moved": true
         },
         {
@@ -135,7 +131,11 @@
           "moved": true
         },
         {
-          "id": "me_core_module:ext/player/add_var_clamped",
+          "id": "me_core_module:text/safe",
+          "moved": true
+        },
+        {
+          "id": "me_core_module:text/split",
           "moved": true
         }
       ]
@@ -286,15 +286,15 @@
           "moved": true
         },
         {
+          "id": "me_container_module:container/slot_clear_do",
+          "moved": true
+        },
+        {
           "id": "me_container_module:container/slot_get_do",
           "moved": true
         },
         {
           "id": "me_container_module:container/slot_set_do",
-          "moved": true
-        },
-        {
-          "id": "me_container_module:container/slot_clear_do",
           "moved": true
         }
       ]

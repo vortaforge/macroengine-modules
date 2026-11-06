@@ -127,7 +127,16 @@ jobs:
         run: |
           set -euo pipefail
           cp -a packs "$RUNNER_TEMP/packs-first"
+          cp modules.json "$RUNNER_TEMP/modules-first.json"
           python3 tools/split.py --source "$SOURCE_DIR" --out . --in-place >/dev/null
+          # modules.json is compared too: it feeds the canary's baseline, and a
+          # manifest that reshuffles itself every run makes every canary red for no
+          # reason. The packs alone were stable while this file was not.
+          if ! cmp -s "$RUNNER_TEMP/modules-first.json" modules.json; then
+            echo "::error title=Non-deterministic manifest::modules.json differs between two identical splits."
+            diff "$RUNNER_TEMP/modules-first.json" modules.json | head -40
+            exit 1
+          fi
           if ! diff -r "$RUNNER_TEMP/packs-first" packs > "$RUNNER_TEMP/split.diff" 2>&1; then
             echo "::error title=Non-deterministic split::Two splits of the same input produced different output."
             head -40 "$RUNNER_TEMP/split.diff"
