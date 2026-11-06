@@ -280,6 +280,15 @@ HOOK_CALL_SUFFIX = r"(?![a-z0-9_/])"
 VALUE_SLOTS = {"perm_require", "player_get_name"}
 
 
+def _is_within(child: Path, parent: Path) -> bool:
+    """True when `child` is inside `parent` (or is `parent`)."""
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def module_namespace(module: str) -> str:
     return f"me_{module}_module"
 
@@ -399,8 +408,11 @@ def _rewrite_id(value: str, mapping: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 class Split:
-    def __init__(self, source: Path, out: Path):
+    def __init__(self, source: Path, out: Path, *, force: bool = False,
+                 in_place: bool = False):
         self.source = source
+        self.force = force
+        self.in_place = in_place
         self.out = out
         self.mapping: dict[str, str] = {}
         self.assigned: dict[str, str] = {}
@@ -468,9 +480,66 @@ class Split:
         # achievement/predicate/loot_table/... keep their folder, only ids change
         return "/".join([kind, *[s for s in parts[1:-1] if s not in DROP_SEGMENTS], parts[-1]])
 
+    # Names that must never be the output root, because writing there means
+    # deleting the project that is running the script. This is not hypothetical:
+    # `--out .` did exactly that once, taking .git with it, and the only reason it
+    # was recoverable is that the previous commit had been pushed.
+    UNSAFE_OUT_NAMES = ("", ".", "..", "src", "tools", "docs", "gradle")
+
+    def _clear_output(self) -> None:
+        """Remove the previous output, refusing to remove anything else.
+
+        The guard is deliberately narrow rather than clever: it stops the three ways
+        this can go wrong in practice - `--out .`, `--out <project>`, and `--out`
+        pointing at a directory that already holds the script's own sources.
+        """
+        if not self.out.exists():
+            return
+
+        resolved = self.out.resolve()
+
+        if resolved.name in self.UNSAFE_OUT_NAMES or str(resolved) in ("/", ""):
+            raise SystemExit(
+                f"refusing to delete {resolved}: that is a project root, not a build "
+                f"output directory.\n"
+                f"Use a dedicated output path, e.g.  --out .   is NOT allowed; the "
+                f"project layout writes packs to <out>/packs,\n"
+                f"so pass the project root only via --in-place (see below) or use a "
+                f"separate directory.")
+
+        # Second guard: the output must not contain the source pack, and the source
+        # must not contain the output. Either would mean the rmtree below deletes
+        # data this run still needs.
+        source = self.source.resolve()
+        if _is_within(source, resolved) or _is_within(resolved, source):
+            raise SystemExit(
+                f"refusing to use {resolved} as output: it overlaps the source pack "
+                f"{source}")
+
+        # Third guard: never delete a checkout. A `.git` inside the output means a
+        # human's repository, and rmtree would take the history with the build
+        # products.
+        if (resolved / ".git").exists() and not self.force:
+            raise SystemExit(
+                f"refusing to delete {resolved}: it is a git working tree "
+                f"(it contains .git). Pass --force only if you are certain the "
+                f"output directory is disposable.")
+
+        shutil.rmtree(resolved)
+
     def write(self) -> None:
-        if self.out.exists():
-            shutil.rmtree(self.out)
+        if self.in_place:
+            # Project-root mode: the packs and manifests live *inside* a checkout
+            # alongside build.gradle and tools/, so clearing the whole root would
+            # delete the project. Only the things this script owns are removed.
+            for owned in (self.out / "packs", self.out / "modules.json",
+                          self.out / "MACRO_REFS.txt"):
+                if owned.is_dir():
+                    shutil.rmtree(owned)
+                elif owned.is_file():
+                    owned.unlink()
+        else:
+            self._clear_output()
 
         # Module -> the hook contributions it declares. A module only ever adds its
         # own values; it never edits core's tag, which is what keeps modules
@@ -788,9 +857,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--report-unmapped", action="store_true")
+    parser.add_argument(
+        "--in-place", action="store_true",
+        help="the output root is a project checkout: clear only packs/ and the "
+             "manifests, never the whole directory")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="allow clearing an output directory that contains a .git")
     args = parser.parse_args(argv[1:])
 
-    split = Split(args.source.resolve(), args.out.resolve())
+    split = Split(args.source.resolve(), args.out.resolve(),
+                  force=args.force, in_place=args.in_place)
     split.collect()
     split.write()
 

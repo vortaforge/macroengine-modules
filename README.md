@@ -1,118 +1,126 @@
 # macroengine-modules
 
-**macroEngine**, tek bir veri paketinden **bir çekirdek + bağımsız modüller** hâline
-bölünmüş hâliyle. Düzen Fabric API'nin düzeni: çekirdek motoru taşır, her modül
-çekirdeğe *hook tag'leri* üzerinden bağlanır ve çekirdek hiçbir modülün adını anmaz.
+**macroEngine**, split from one data pack into **a core plus independent modules**.
+The arrangement mirrors Fabric API: the core carries the engine, each module
+attaches to it through *hook tags*, and the core never names a module.
 
 ```
-me_core_module      motor: iç işleyiş, load, tick, hook slot'ları
-me_cmd_module       komut yürütme, freeze
-me_player_module    oyuncu defteri
-me_wand_module      asa
-...                 (18 modül daha)
+me_core_module      engine: internals, load, tick, hook slots
+me_cmd_module       command execution, freeze
+me_player_module    player registry
+me_wand_module      wand
+...                 (17 more modules)
 ```
 
-## Neden bu düzen
+## Why this arrangement
 
-Tek paket hâlindeki macroEngine 1559 dosya, 1280 fonksiyon ve 105 tag'den oluşuyordu.
-Hepsi tek namespace'te olduğu için "şu özelliği kaldırayım" demek, 9000'in üzerinde
-referansın içinden o özelliğe ait olanları elle ayıklamak demekti. Bölünmüş hâlde bir
-modülü kaldırmak, `build/packs/me_wand_module/` klasörünü silmekten ibarettir.
+The single-pack macroEngine was 1559 files, 1280 functions and 105 tags. Everything
+lived in one namespace, so "let me remove this feature" meant hand-picking its
+references out of more than 9000 of them. Split, removing a module is deleting
+`packs/me_wand_module/`.
 
-Bunu mümkün kılan iki kural var, ve ikisi de doğrulayıcı tarafından zorlanıyor:
+Two rules make that possible, and the verifier enforces both:
 
-1. **Çekirdek hiçbir modülü adıyla çağırmaz.** Çekirdeğin bir modüle ihtiyacı olduğunda
-   `function #me_core_module:hook/<slot>` çağırır. Modül kendi paketinde *aynı tag
-   kimliğini* tanımlayıp kendini ekler; oyun iki tanımı birleştirir.
-2. **Bir modül başka bir modülün `core/internal` ağacına girmez.** Girebileceği tek yer
-   karşı modülün *yayınlanmış* yüzeyidir.
+1. **The core never calls a module by name.** When the core needs a module it calls
+   `function #me_core_module:hook/<slot>`. The module defines *the same tag id* in
+   its own pack and adds itself; the game unions the two definitions.
+2. **A module never reaches into another module's `core/internal` tree.** The only
+   thing it may call is the other module's *published* surface.
 
-İkisi de `gradlew check` ile denetlenir. Bir modülü silmek paketi bozmaz.
+`gradlew check` verifies both. Deleting a module does not break the pack.
 
-## Kimlik şeması
+## Id scheme
 
 ```
-me_<modül>_module:<fonksiyon yolu>
+me_<module>_module:<function path>
 ```
 
-`api/` ve `systems/` segmentleri **kaldırıldı**: namespace zaten modülü söylüyor, yol da
-özelliği söylüyor. Eski `macroengine:api/cmd/other/run` → yeni
-`me_cmd_module:cmd/other/run`. 1280 fonksiyonun tamamında çakışma yok.
+The `api/` and `systems/` segments are **gone**: the namespace already says which
+module, and the path says which feature. Old `macroengine:api/cmd/other/run` becomes
+`me_cmd_module:cmd/other/run`. Zero collisions across all 1280 functions.
 
-| Eski | Yeni |
+| Before | After |
 |---|---|
 | `macroengine:api/wand/give_custom` | `me_wand_module:wand/give_custom` |
 | `macroengine:systems/logic/if_or` | `me_core_module:logic/if_or` |
-| `macroengine:core/internal/text/split` | `me_core_module:text/split` (yayınlandı) |
+| `macroengine:core/internal/text/split` | `me_core_module:text/split` (published) |
 | `macroengine:core/internal/player/init` | `me_player_module:core/internal/player/init` |
 
-## Derleme
+## Building
 
-Her modül ayrı bir Gradle alt-projesi, her biri kendi jar'ını üretir:
+Each module is its own Gradle sub-project and produces its own jar:
 
 ```bash
-export JAVA_HOME=/path/to/jdk25     # 26.3 Java 25 ister
+export JAVA_HOME=/path/to/jdk25     # 26.3 requires Java 25
 
-python3 tools/split.py --source <macroEngine-26.3 paketi> --out build
-./gradlew dist                      # build/dist/*.jar — 20 paket
-./gradlew check                     # referansları, sınırları, hook'ları doğrular
-./gradlew :me_cmd_module:dist       # tek modülün jar'ı
+python3 tools/split.py --source <macroEngine-26.3 pack> --out . --in-place
+./gradlew dist                      # build/dist/*.jar - 20 packs
+./gradlew check                     # verify references, boundaries, hooks
+./gradlew :me_cmd_module:dist       # one module's jar
 ```
 
-`build/packs/` üretilen çıktıdır, depoya girmez (`build/` .gitignore'da). Jar'lar
-doğrudan bir dünyanın `datapacks/` klasörüne atılabilir; **core olmadan hiçbir modül
-yüklenmez**, ama core tek başına yüklenir ve çalışır.
+`packs/` is generated output and is not committed. It deliberately sits **outside**
+`build/`: `gradlew clean` deletes `build/`, and the packs are an *input* to the
+build (they are its sub-projects), not an output of it. Putting them under `build/`
+made `clean` delete the thing it was about to build.
 
-## Modül listesi
+The jars can be dropped straight into a world's `datapacks/` folder. **No module
+loads without core**, but core loads and runs on its own.
 
-| Modül | Dosya | Ne yapar |
+## Modules
+
+| Module | Files | What it does |
 |---|---:|---|
-| `me_core_module` | 836 | motor, hook slot'ları, load/tick, metin ve matematik servisleri |
-| `me_cmd_module` | 185 | komut yürütme, freeze, multi_cmd |
-| `me_player_module` | 181 | oyuncu defteri, giriş/çıkış, isim çözümleme |
-| `me_store_module` | 71 | kalıcı anahtar-değer deposu |
-| `me_perm_module` | 34 | izinler |
-| `me_world_module` | 29 | dünya işlemleri |
-| `me_container_module` | 27 (+4 yayınlanmış) | konteyner slot işlemleri |
-| `me_wand_module` | 26 | asa |
-| `me_toggle_module` | 25 | açma/kapama bayrakları |
-| `me_cb_module` | 23 | komut bloğu kuyruğu |
-| `me_block_module` | 20 | blok davranış kaydı |
-| `me_title_module` | 17 | başlık / actionbar |
-| `me_item_module` | 16 | eşya |
-| `me_interaction_module` | 16 | etkileşim taraması |
-| `me_color_module` | 13 | renk |
-| `me_gamerule_module` | 13 | gamerule |
-| `me_trigger_module` | 12 | trigger kaydı |
-| `me_tui_module` | 8 | metin arayüzü |
-| `me_macro_module` | 5 | macro yardımcıları |
-| `me_diagnostics_module` | 2 | teşhis |
+| `me_core_module` | 836 | engine, hook slots, load/tick, text and math services |
+| `me_cmd_module` | 185 | command execution, freeze, multi_cmd |
+| `me_player_module` | 181 | player registry, join/leave, name resolution |
+| `me_store_module` | 71 | persistent key-value store |
+| `me_perm_module` | 34 | permissions |
+| `me_world_module` | 29 | world operations |
+| `me_container_module` | 27 (+4 published) | container slot operations |
+| `me_wand_module` | 26 | wand |
+| `me_toggle_module` | 25 | on/off flags |
+| `me_cb_module` | 23 | command block queue |
+| `me_block_module` | 20 | block behaviour registry |
+| `me_title_module` | 17 | title / actionbar |
+| `me_item_module` | 16 | items |
+| `me_interaction_module` | 16 | interaction scan |
+| `me_color_module` | 13 | colour |
+| `me_gamerule_module` | 13 | gamerules |
+| `me_trigger_module` | 12 | trigger registry |
+| `me_tui_module` | 8 | text UI |
+| `me_macro_module` | 5 | macro helpers |
+| `me_diagnostics_module` | 2 | diagnostics |
 
-## Kendi modülünü yazmak
+## Writing your own module
 
-`docs/CORE.md` hook sözleşmesini, `docs/MODULE.md` yeni bir modülün iskeletini anlatır.
-Kısaca: bir klasör aç, `me_<ad>_module` namespace'ini kullan, çekirdeğin hook tag'ine
-kendi değerini ekle. Çekirdekte tek satır değiştirmen gerekmez.
+`docs/CORE.md` describes the hook contract; `docs/MODULE.md` walks through a new
+module. In short: make a folder, use the `me_<name>_module` namespace, add your
+value to the core's hook tag. You do not need to change a single line in the core.
 
-## Araçlar
+## Tools
 
-| Dosya | İş |
+| File | Purpose |
 |---|---|
-| `tools/split.py` | kaynak paketi böler; kimlikleri yeniden yazar, hook tag'lerini üretir |
-| `tools/verify.py` | bölünmüş çıktıyı denetler (referans, sınır, döngü, hook, pack.mcmeta) |
+| `tools/split.py` | splits the source pack: rewrites ids, emits hook tags |
+| `tools/verify.py` | checks the split output (references, boundaries, cycles, hooks, pack.mcmeta) |
 
-`split.py` kaynağı **hiç değiştirmez**; her koşuda `build/` ağacını sıfırdan yazar.
+`split.py` never modifies its source. It refuses to clear an output directory that
+looks like a project (a `.git`, or one of `src`/`tools`/`docs`); the project layout
+is written with `--out . --in-place`, which clears only `packs/` and the two
+manifests.
 
-## Bilinen sınırlar
+## Known limits
 
-- `me_cmd_module:cmd/other/action_run` bir macro fonksiyondur: hedefi `$(type)` ile
-  çalışma anında kurulur, statik olarak çözülemez. `build/MACRO_REFS.txt`'te listelenir
-  ve doğrulayıcıda muaftır.
-- `me_tui_module` bir tellraw `click_event`'i içinde `/function $(fn)` yazar; aynı sebep.
-- Kaynak pakette zaten var olan bazı tag referansları (`#macroengine:internal/dispatch`
-  gibi) bölünmüş çıktıda da aynı biçimde durur; bunlar bölme hatası değil, kaynağın
-  kendi durumudur.
+- `me_cmd_module:cmd/other/action_run` is a macro function: its target is built at
+  run time from `$(type)` and cannot be resolved statically. It is listed in
+  `MACRO_REFS.txt` and exempted in the verifier.
+- `me_tui_module` writes `/function $(fn)` inside a tellraw `click_event`; same
+  reason.
+- Some tag references that already existed in the source pack (such as
+  `#macroengine:internal/dispatch`) remain in the same shape in the split output.
+  They are the source's own condition, not split damage.
 
-## Lisans
+## License
 
-`LICENSE` dosyasına bakın.
+See `LICENSE`.

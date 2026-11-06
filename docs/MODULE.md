@@ -1,10 +1,10 @@
-# Yeni bir modül yazmak
+# Writing a new module
 
-Bu dosya, kaynak paketi bölmenin dışında **elle** bir modül eklemenin yolunu
-anlatır. Var olan bir modülü incelemek en hızlı yol: `build/packs/me_wand_module/`
-iyi bir örnektir (26 fonksiyon, tek hook katkısı).
+This file describes how to add a module **by hand**, outside the pack splitter. The
+fastest way to see the shape is to read an existing one: `packs/me_wand_module/` is
+a good example (26 functions, one hook contribution).
 
-## 1. İskelet
+## 1. Skeleton
 
 ```
 me_shout_module/
@@ -13,15 +13,15 @@ me_shout_module/
     └── me_shout_module/
         ├── function/
         │   ├── shout/
-        │   │   ├── send.mcfunction        # yayınlanmış yüzey
+        │   │   ├── send.mcfunction          # published surface
         │   │   └── internal/
-        │   │       └── format.mcfunction  # özel
+        │   │       └── format.mcfunction    # private
         │   └── hook/
-        │       └── tick.mcfunction        # bu modülün tick işi
-        └── tags/                          # (opsiyonel, kendi tag'lerin)
+        │       └── tick.mcfunction          # this module's tick work
+        └── tags/                            # (optional) your own tags
 ```
 
-`pack.mcmeta` (26.x biçimi):
+`pack.mcmeta` (26.x form):
 
 ```json
 {
@@ -33,9 +33,9 @@ me_shout_module/
 }
 ```
 
-## 2. Çekirdeğe bağlan
+## 2. Attach to the core
 
-Çekirdeğin bir tick kancasına katılmak için **kendi paketinde** şu dosyayı yaz:
+To join the core's tick hook, write this **in your own pack**:
 
 ```
 data/me_core_module/tags/function/hook/tick.json
@@ -50,17 +50,17 @@ data/me_core_module/tags/function/hook/tick.json
 }
 ```
 
-Bu kadar. Çekirdekte hiçbir dosyaya dokunmadın, çekirdek senin adını bilmiyor,
-ve sen silindiğinde çekirdek çalışmaya devam eder.
+That is all. You did not touch a single file in the core, the core does not know
+your name, and the core keeps working when you are removed.
 
-> `replace: false` **zorunlu**. `true` yazarsan çekirdeğin ve diğer modüllerin
-> katkılarını silersin — tag'i son yazan kazanır, yani bir modül diğerlerini
-> sessizce kapatır.
+> `replace: false` is **mandatory**. Write `true` and you delete the core's and
+> every other module's contributions — the last writer wins, so one module silently
+> switches off all the others.
 
-## 3. Çekirdeğin servislerini kullan
+## 3. Use the core's services
 
 ```mcfunction
-# metni böl
+# split text
 data modify storage macroengine:input string set from storage me_shout:work line
 data modify storage macroengine:input separator set value " "
 data modify storage macroengine:input n set value 1
@@ -68,58 +68,58 @@ function me_core_module:text/split
 data modify storage me_shout:work first set from storage macroengine:output string.result[0]
 ```
 
-`core/internal/...` **çağırma**. Bir şeye ihtiyacın var ve yayınlanmamışsa, doğru
-cevap onu çağırmak değil: ya kendi modülünde yaz, ya da o modülün deposunda bir
-"bunu yayınlayalım" isteği aç.
+Do **not** call `core/internal/...`. If you need something and it is not published,
+the right answer is not to call it anyway: either write it in your own module, or
+open a "let's publish this" issue on that module's repository.
 
-## 4. Başka bir modülü kullan
+## 4. Use another module
 
-Var olan bir modülün yayınlanmış yüzeyini çağır:
+Call an existing module's published surface:
 
 ```mcfunction
 function me_container_module:container/slot_set
 ```
 
-`me_container_module:core/internal/container/slot_set_do` **hayır**. İlki sözleşme,
-ikincisi o modülün kendi işi — yarın yeniden adlandırılabilir.
+Not `me_container_module:core/internal/container/slot_set_do`. The first is a
+contract; the second is that module's own business and may be renamed tomorrow.
 
-## 5. Derle
+## 5. Build
 
 ```bash
-# paketleri üret (yalnızca kaynak paketten bölüyorsan)
-python3 tools/split.py --source <paket> --out build
+# generate the packs (only if you are splitting from a source pack)
+python3 tools/split.py --source <pack> --out . --in-place
 
-# senin modülün için jar
+# your module's jar
 ./gradlew :me_shout_module:dist
 
-# hepsini birden + doğrulama
+# everything plus verification
 ./gradlew check dist
 ```
 
-`build/packs/` altındaki bir klasörü elle oluşturduysan `settings.gradle` onu
-kendiliğinden bulur (klasörleri tarar, liste sabit değil) — ama `split.py` her
-koşuda `build/` ağacını sıfırdan yazdığı için elle eklediğin klasör **silinir**.
-Kalıcı bir modül yazıyorsan `tools/split.py` içindeki `MODULES` tablosuna ekle,
-ya da modülü `build/` dışında ayrı bir proje olarak tut.
+If you created a folder under `packs/` by hand, `settings.gradle` finds it on its
+own (it scans the directory rather than hard-coding a list). But `split.py` rewrites
+the whole `packs/` tree on every run, so a hand-made folder **is deleted** by the
+next split. If you are writing a module meant to last, add it to the `MODULES` table
+in `tools/split.py`, or keep the module outside `packs/` as its own project.
 
-## 6. Doğrula
+## 6. Verify
 
 ```bash
 ./gradlew check
 ```
 
-Şu hataları görürsen:
+If you see these:
 
-| Mesaj | Anlamı |
+| Message | Meaning |
 |---|---|
-| `dangling-reference` | bir `function x:y` var ama `y` hiçbir pakette tanımlı değil |
-| `private-access` | başka bir modülün `core/internal` ağacına girdin |
-| `hooks` | çekirdek bir modülü adıyla çağırıyor (bu senin değil, çekirdeğin hatası) |
-| `cycle` | modül grafiğinde döngü var; genelde iki modül birbirini çağırıyor |
-| `pack-layout` | `pack.mcmeta` yok ya da paket boş |
+| `dangling-reference` | there is a `function x:y` but `y` is defined in no pack |
+| `private-access` | you reached into another module's `core/internal` tree |
+| `hooks` | the core calls a module by name (the core's fault, not yours) |
+| `cycle` | the module graph has a cycle; usually two modules calling each other |
+| `pack-layout` | missing `pack.mcmeta`, or an empty pack |
 
-## 7. Yayınlanan yüzeyini belgele
+## 7. Document your published surface
 
-Modülünün deposuna üç satırlık bir `PUBLIC.md` koy: hangi kimlikler sözleşme, hangi
-girdi storage'ı okuyorlar, hangi çıktıyı yazıyorlar, ne döndürüyorlar. `verify.py`
-bunu denetlemez; bir sonraki modülü yazan kişi denetler.
+Put a three-line `PUBLIC.md` in your module's repository: which ids are the
+contract, which input storage they read, which output they write, what they return.
+`verify.py` does not check this; the next person writing a module does.

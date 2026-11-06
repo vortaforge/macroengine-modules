@@ -115,7 +115,7 @@ subprojects {
             def python = System.getenv('PYTHON') ?: 'python3'
             def result = providers.exec {
                 commandLine python, script.absolutePath,
-                        '--pack', rootProject.file('build/packs').absolutePath
+                        '--pack', rootProject.file('packs').absolutePath
             }.standardOutput.asText.get()
             logger.lifecycle(result.trim())
         }
@@ -137,7 +137,13 @@ tasks.register('verifyAll') {
     group = 'verification'
 
     def script = file('tools/verify.py')
-    def packs = file('build/packs')
+    def packs = file('packs')
+
+    // The verifier reads pack.mcmeta, which every sub-project's `renderPackMeta`
+    // writes. Without this the two are unordered: Gradle 9 rejects the graph, and
+    // on an older Gradle verification could read a pack whose manifest has not been
+    // generated yet and report a missing pack.mcmeta the build was about to create.
+    dependsOn subprojects.collect { "${it.path}:renderPackMeta" }
 
     inputs.dir(packs)
     inputs.file(script)
@@ -146,7 +152,7 @@ tasks.register('verifyAll') {
     doLast {
         if (!packs.isDirectory()) {
             throw new GradleException(
-                    "No packs in ${packs}. Run: python3 tools/split.py --source <pack> --out build")
+                    "No packs in ${packs}. Run: python3 tools/split.py --source <pack> --out . --in-place")
         }
         def python = System.getenv('PYTHON') ?: 'python3'
         def proc = providers.exec {
@@ -162,8 +168,32 @@ tasks.register('verifyAll') {
     }
 }
 
+// The splitter's output guard and the verifier are both load-bearing, so both are
+// part of `check`. A tool that can delete a project root needs a test that runs
+// on every build, not only when someone remembers.
+tasks.register('testTools') {
+    description = 'Run the tool self-tests (splitter output guard).'
+    group = 'verification'
+
+    def guard = file('tools/test_split_guard.py')
+    inputs.file(guard)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def python = System.getenv('PYTHON') ?: 'python3'
+        def proc = providers.exec {
+            commandLine python, guard.absolutePath
+            ignoreExitValue = true
+        }
+        logger.lifecycle(proc.standardOutput.asText.get().trim())
+        if (proc.result.get().exitValue != 0) {
+            throw new GradleException("tools/test_split_guard.py failed")
+        }
+    }
+}
+
 tasks.named('check') {
-    dependsOn 'verifyAll'
+    dependsOn 'verifyAll', 'testTools'
 }
 
 // `gradlew` with no arguments builds everything.

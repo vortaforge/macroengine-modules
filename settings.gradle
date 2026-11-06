@@ -6,7 +6,7 @@
 // module is an independent data pack that declares the core as its dependency and
 // attaches to it through hook tags. Nothing in the core names a module.
 //
-// The generated packs live under `build/packs/` (produced by tools/split.py) and
+// The generated packs live under `packs/` (produced by tools/split.py) and
 // each is registered here as its own Gradle sub-project, so `:me_cmd_module:build`
 // produces a jar for exactly one module and nothing else. That is what makes the
 // modules independently shippable rather than "one big jar with folders in it".
@@ -28,7 +28,7 @@ pluginManagement {
 
 rootProject.name = 'macroengine-modules'
 
-def packsDir = file('build/packs')
+def packsDir = file('packs')
 def moduleDirs = packsDir.isDirectory()
         ? packsDir.listFiles().findAll { it.isDirectory() }.sort { it.name }
         : []
@@ -43,7 +43,7 @@ moduleDirs.each { dir ->
 gradle.projectsLoaded {
     if (moduleDirs.isEmpty()) {
         logger.warn('')
-        logger.warn('  No packs found under build/packs/.')
+        logger.warn('  No packs found under packs/.')
         logger.warn('  Generate them first:  python3 tools/split.py \\')
         logger.warn('                          --source <pack> --out build')
         logger.warn('')
