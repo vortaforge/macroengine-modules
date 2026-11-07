@@ -13,6 +13,22 @@
 //
 // `packs/` is re-generated, so the list is discovered rather than hard-coded: a
 // module added by the splitter appears in the build without editing this file.
+// Only directories named me_<name>_module are picked up; build.gradle derives the
+// Fabric mod id from that shape, and a stray directory (.git, __pycache__, an
+// editor backup) would otherwise become a sub-project and break the build with an
+// unrelated-looking error.
+//
+// This file also owns the build's console helper (class MeConsole below) and
+// registers it as gradle.ext.me. build.gradle reads it from there, so the two
+// files have to be updated together.
+//
+//   -PmeDebug        or  ME_DEBUG=1      print [DBG ] lines: paths, commands, timings
+//   -Pcolor=false    or  NO_COLOR=1      plain output
+//   -Pcolor=true     or  FORCE_COLOR=1   force ANSI colours
+//   PYTHON=<path>                        interpreter for the tools/*.py scripts
+//
+// AI involvement: the MeConsole helper, the pack-name filter and the diagnostics
+// in this file were written with AI assistance (Claude, Anthropic).
 // =============================================================================
 
 pluginManagement {
@@ -26,26 +42,246 @@ pluginManagement {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Console helper: colours, [TAG] lines, running tools/*.py, readable failures.
+//
+// ASCII only on purpose. Unicode markers turn into '?' on a Windows console whose
+// code page is not UTF-8, and this build is run from one often enough to matter.
+// -----------------------------------------------------------------------------
+class MeConsole {
+    final Logger logger
+    final boolean color
+    final boolean debugOn
+    private String pythonCmd = null
+
+    MeConsole(Logger logger, boolean color, boolean debugOn) {
+        this.logger = logger
+        this.color = color
+        this.debugOn = debugOn
+    }
+
+    // --- colour --------------------------------------------------------------
+    String paint(String code, Object text) {
+        color ? ('\u001B[' + code + 'm' + text + '\u001B[0m') : text.toString()
+    }
+    String red(Object t)    { paint('31', t) }
+    String green(Object t)  { paint('32', t) }
+    String yellow(Object t) { paint('33', t) }
+    String cyan(Object t)   { paint('36', t) }
+    String gray(Object t)   { paint('90', t) }
+
+    private String tag(String label, String code) { paint(code, '[' + label + ']') }
+
+    // --- formatting ------------------------------------------------------------
+    String ms(long millis) {
+        millis < 1000 ? "${millis} ms".toString() : String.format(Locale.ROOT, '%.1f s', millis / 1000.0d)
+    }
+    String size(long bytes) {
+        bytes < 1024 ? "${bytes} B".toString() : String.format(Locale.ROOT, '%.1f KiB', bytes / 1024.0d)
+    }
+    private static String quote(Object s) {
+        String t = s.toString()
+        t.contains(' ') ? '"' + t + '"' : t
+    }
+
+    // --- one-line messages -------------------------------------------------------
+    void info(Object m) { logger.lifecycle(tag('INFO', '36') + ' ' + m) }
+    void step(Object m) { logger.lifecycle(tag(' RUN', '1;34') + ' ' + m) }
+    void ok(Object m)   { logger.lifecycle(tag(' OK ', '1;32') + ' ' + m) }
+    void warn(Object m) { logger.warn(tag('WARN', '1;33') + ' ' + yellow(m)) }
+    void dbg(Object m)  { if (debugOn) logger.lifecycle(tag('DBG ', '90') + ' ' + gray(m)) }
+
+    // --- failures ------------------------------------------------------------------
+    // Prints the details in colour and returns the exception for the caller to
+    // throw: `throw me.problem(...)`. The exception text is what Gradle shows under
+    // "What went wrong", so it stays short and carries the fix.
+    GradleException problem(String what, List details = [], String fix = null) {
+        logger.error(tag('FAIL', '1;31') + ' ' + red(what))
+        details.each { logger.error('       ' + it) }
+        if (fix) {
+            fix.readLines().eachWithIndex { String line, int i ->
+                logger.error('       ' + (i == 0 ? cyan('fix: ') : '     ') + line)
+            }
+        }
+        quiet(new GradleException(fix ? what + '\n' + fix : what))
+    }
+
+    // The message is the whole story. Without this, Gradle's "Where:" points at the
+    // line in this helper that built the exception, which says nothing useful.
+    private static GradleException quiet(GradleException e) {
+        e.stackTrace = new StackTraceElement[0]
+        e
+    }
+
+    // --- running the Python tools ----------------------------------------------------
+    Map launch(List cmd, File dir) {
+        long t0 = System.nanoTime()
+        ProcessBuilder pb = new ProcessBuilder(cmd.collect { it.toString() })
+        if (dir != null) pb.directory(dir)
+        // The tools print UTF-8; without this a Windows code page mangles it.
+        pb.environment().put('PYTHONIOENCODING', 'utf-8')
+        pb.environment().put('PYTHONUTF8', '1')
+        Process p
+        try {
+            p = pb.start()
+        } catch (IOException e) {
+            return [exit: -1, out: '', err: (e.message ?: e.toString()), started: false, ms: elapsed(t0)]
+        }
+        p.outputStream.close() // a script that reads stdin must see EOF, not hang the build
+        def out = new ByteArrayOutputStream()
+        def err = new ByteArrayOutputStream()
+        p.waitForProcessOutput(out, err)
+        return [exit: p.exitValue(), out: out.toString('UTF-8'), err: err.toString('UTF-8'),
+                started: true, ms: elapsed(t0)]
+    }
+    private long elapsed(long t0) { (System.nanoTime() - t0).intdiv(1_000_000L) as long }
+
+    // PYTHON wins. Otherwise Windows tries `python`, then the `py` launcher; Linux
+    // and macOS try `python3`. The Microsoft Store stub that answers `python` on a
+    // fresh Windows install exits non-zero, so it is skipped rather than chosen.
+    String python() {
+        if (pythonCmd != null) return pythonCmd
+        String explicit = System.getenv('PYTHON')
+        boolean windows = System.getProperty('os.name', '').toLowerCase().contains('windows')
+        List candidates = explicit ? [explicit] : (windows ? ['python', 'py', 'python3'] : ['python3', 'python'])
+        List tried = []
+        for (Object c in candidates) {
+            Map r = launch([c.toString(), '--version'], null)
+            String text = ((r.out ?: '') + ' ' + (r.err ?: '')).trim()
+            if (r.started && r.exit == 0 && text.startsWith('Python 3')) {
+                pythonCmd = c.toString()
+                dbg("python : ${pythonCmd}  (${text})")
+                return pythonCmd
+            }
+            String why = r.started ? (text ?: ('exit code ' + r.exit)) : 'not found'
+            tried << ('tried ' + c + ': ' + why)
+        }
+        throw problem('No working Python 3 interpreter found.', tried,
+                '''Install Python 3 (https://www.python.org/downloads/) or point the build at one:
+  PowerShell:  $env:PYTHON = "C:\\Python312\\python.exe"
+  bash:        PYTHON=/usr/bin/python3 ./gradlew check''')
+    }
+
+    // Runs `<python> <script> <args>`, shows what it printed, and turns any failure
+    // into a readable message instead of Gradle's "finished with non-zero exit value".
+    Map runScript(String label, File script, List args, File workDir) {
+        if (!script.isFile()) {
+            throw problem(label + ': the tool script ' + script + ' does not exist.',
+                    ['It lives in tools/ in the repository; the checkout is incomplete or the file was moved.'],
+                    'Restore it from git and re-run.')
+        }
+        List cmd = [python(), script.absolutePath] + args.collect { it.toString() }
+        step(label)
+        dbg('cwd    : ' + workDir)
+        dbg('command: ' + cmd.collect { quote(it) }.join(' '))
+        Map r = launch(cmd, workDir)
+        if (r.exit != 0) throw scriptFailed(label, cmd, r)
+        if (r.out?.trim()) r.out.readLines().each { logger.lifecycle('       ' + it) }
+        if (r.err?.trim()) r.err.readLines().each { logger.warn('       ' + yellow(it)) }
+        ok(label + ' (' + ms(r.ms) + ')')
+        return r
+    }
+
+    private GradleException scriptFailed(String label, List cmd, Map r) {
+        String headline = r.started ? ('exited with code ' + r.exit) : 'could not be started'
+        logger.error(tag('FAIL', '1;31') + ' ' + red(label + ' ' + headline + ' (' + ms(r.ms) + ')'))
+        logger.error('       command: ' + cmd.collect { quote(it) }.join(' '))
+        if (!r.started) logger.error('       reason : ' + r.err)
+        if (r.out?.trim()) {
+            logger.error(gray('       ---- stdout ----'))
+            tail(r.out).each { logger.error('       ' + it) }
+        }
+        if (r.started && r.err?.trim()) {
+            logger.error(gray('       ---- stderr ----'))
+            tail(r.err).each { logger.error('       ' + it) }
+        }
+        String hint = hintFor(r)
+        logger.error('       ' + cyan('hint: ') + hint)
+        quiet(new GradleException(label + ' failed' + (r.started ? ' (exit code ' + r.exit + ')' : '') + '.\n' + hint))
+    }
+
+    private List tail(String text) {
+        List lines = text.readLines()
+        if (debugOn || lines.size() <= 40) return lines
+        return ['... ' + (lines.size() - 40) + ' earlier lines hidden; add -PmeDebug to see them'] + lines.takeRight(40)
+    }
+
+    private String hintFor(Map r) {
+        if (!r.started) return 'The process could not start: ' + r.err
+        String text = (r.out ?: '') + '\n' + (r.err ?: '')
+        def m = (text =~ /No module named '?([A-Za-z0-9_.]+)'?/)
+        if (m.find()) return 'A Python module is missing. Try: ' + python() + ' -m pip install ' + m.group(1)
+        if (text.contains('SyntaxError')) return 'The script has a syntax error (see the traceback above), or Python is older than the script expects.'
+        return 'Fix what is listed above and re-run. Add -PmeDebug for the full output.'
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Switches
+// -----------------------------------------------------------------------------
+def flag = { String propName, String envName ->
+    String v = providers.gradleProperty(propName).orNull
+    if (v == null) {
+        String e = System.getenv(envName)
+        v = e ? e : null
+    }
+    v != null && !(v.trim().toLowerCase() in ['0', 'false', 'no', 'off'])
+}
+
+def colorProp = providers.gradleProperty('color').orNull
+boolean useColor
+if (colorProp != null) {
+    useColor = !(colorProp.trim().toLowerCase() in ['0', 'false', 'no', 'off'])
+} else if (System.getenv('NO_COLOR')) {
+    useColor = false
+} else if (System.getenv('FORCE_COLOR') && System.getenv('FORCE_COLOR') != '0') {
+    useColor = true
+} else {
+    // Gradle does not say whether stdout is a terminal in Auto mode, so guess:
+    // colour unless CI or a dumb terminal says otherwise.
+    String mode = gradle.startParameter.consoleOutput.name()
+    useColor = mode == 'Rich' || mode == 'Verbose' ||
+            (mode == 'Auto' && !System.getenv('CI') && System.getenv('TERM') != 'dumb')
+}
+
+def me = new MeConsole(logger, useColor, flag('meDebug', 'ME_DEBUG'))
+gradle.ext.me = me
+
+// Shared with build.gradle so the filter below and the mod-id derivation there
+// cannot drift apart.
+def packNamePattern = '^me_[a-z0-9_]+_module$'
+gradle.ext.packNamePattern = packNamePattern
+
 rootProject.name = 'macroengine-modules'
 
+me.dbg("settings: Gradle ${gradle.gradleVersion}, Java ${JavaVersion.current()}, root ${rootDir}")
+me.dbg("settings: colour=${useColor}, console=${gradle.startParameter.consoleOutput.name()}")
+
+// -----------------------------------------------------------------------------
+// Pack discovery
+// -----------------------------------------------------------------------------
 def packsDir = file('packs')
-def moduleDirs = packsDir.isDirectory()
+def allDirs = packsDir.isDirectory()
         ? packsDir.listFiles().findAll { it.isDirectory() }.sort { it.name }
         : []
+def moduleDirs = allDirs.findAll { it.name ==~ packNamePattern }
+
+allDirs.findAll { !(it.name ==~ packNamePattern) && !it.name.startsWith('.') && !it.name.startsWith('__') }.each {
+    me.warn("packs/${it.name} is ignored: pack directories must be named me_<name>_module (lowercase letters, digits, underscores).")
+}
 
 moduleDirs.each { dir ->
-    include ":${dir.name}"
+    include dir.name
     project(":${dir.name}").projectDir = dir
 }
+
+me.dbg("settings: ${moduleDirs.size()} pack(s): ${moduleDirs.collect { it.name }.join(', ') ?: '(none)'}")
 
 // A build run before `tools/split.py` should say so plainly instead of failing
 // with "no sub-projects" three screens later.
 gradle.projectsLoaded {
     if (moduleDirs.isEmpty()) {
-        logger.warn('')
-        logger.warn('  No packs found under packs/.')
-        logger.warn('  Generate them first:  python3 tools/split.py \\')
-        logger.warn('                          --source <pack> --out build')
-        logger.warn('')
+        me.warn('No packs found under packs/. Generate them first:')
+        me.warn('    python tools/split.py --source <pack> --out . --in-place')
     }
 }
