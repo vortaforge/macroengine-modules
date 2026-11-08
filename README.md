@@ -65,7 +65,7 @@ Each module is its own Gradle sub-project and produces its own jar:
 export JAVA_HOME=/path/to/jdk25     # 26.3 requires Java 25
 
 python3 tools/split.py --source <macroEngine-26.3 pack> --out . --in-place
-./gradlew dist                      # build/dist/*.jar - 20 packs
+./gradlew dist                      # build/dist/*.jar - 34 modules
 ./gradlew check                     # verify references, boundaries, hooks
 ./gradlew :me_cmd_module:dist       # one module's jar
 ```
@@ -219,7 +219,7 @@ git tag -a v1.0.0 -m "macroEngine modules 1.0.0"
 git push origin v1.0.0
 ```
 
-That builds all 20 packs, stamps every `pack.mcmeta` with the tag's version,
+That builds all 34 modules declared in `modules.json`, stamps every `pack.mcmeta` with the tag's version,
 verifies the jars really carry it, and attaches them plus `SHA256SUMS.txt` to a
 GitHub Release. A tag that already has a release is refused rather than
 overwritten — people have downloaded those jars.

@@ -1,7 +1,7 @@
 # .github/workflows/release.yml
 #
-# Cutting a release: push a tag like `v1.0.0` and this builds all 20 packs from
-# the source pack, verifies them, stamps every pack.mcmeta with that version, and
+# Cutting a release: push a tag like `v1.0.0` and this builds every pack declared
+# in modules.json from the source pack, verifies them, stamps every pack.mcmeta with that version, and
 # attaches the jars to a GitHub Release.
 #
 # Why the version comes from the tag and not from gradle.properties: the tag is
@@ -37,6 +37,16 @@ permissions:
 env:
   SOURCE_REPO: vortaforge/core
   SOURCE_PACK: archived/packs/macroEngine-Datapack-v26.3
+  # Pinned, and required. The source pack decides what every jar contains, so a
+  # release that fetched `main` is not reproducible: the same tag could be built
+  # twice, months apart, from different bytes and nobody could tell which one a
+  # downloaded jar came from. A floating ref is fine for the daily canary
+  # (upstream-canary.yml exists to notice upstream moving); it is not fine for
+  # something people install.
+  #
+  # Bumping this is a deliberate, reviewable change, and the value is written into
+  # the release notes so the provenance of a jar can be checked after the fact.
+  SOURCE_SHA: "3e943c6591111ebe004cc8c05e2283ebbbb1fa3c"
   JAVA_VERSION: "25"
 
 jobs:
@@ -77,24 +87,55 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "releasing ${version}"
 
-      - name: Fetch the source pack
+      - name: Fetch the source pack at the pinned commit
         env:
           GH_TOKEN: ${{ secrets.SOURCE_READ_TOKEN || github.token }}
         run: |
           set -euo pipefail
+          if ! printf '%s' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error title=SOURCE_SHA is not pinned::env.SOURCE_SHA must be a full 40-character commit SHA. A branch name here would make this release unreproducible."
+            exit 1
+          fi
+
           dest="${RUNNER_TEMP}/source-pack"
           rm -rf "$dest"
-          if ! git clone --quiet --filter=blob:none --sparse --depth=1 \
-                "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE_REPO}.git" "$dest"; then
-            echo "::error title=Cannot fetch the source pack::set SOURCE_READ_TOKEN if ${SOURCE_REPO} is private."
+          mkdir -p "$dest"
+          git -C "$dest" init --quiet
+          git -C "$dest" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE_REPO}.git"
+
+          # Fetch exactly the pinned commit. Some servers refuse to serve an
+          # arbitrary SHA by name (`uploadpack.allowReachableSHA1InWant` is often
+          # off), so the depth is a fallback rather than the primary path: first
+          # ask for the SHA, and if that is refused, fetch the branch and check
+          # the SHA is in the result - still refusing anything that is not the
+          # pinned commit.
+          if ! git -C "$dest" fetch --quiet --depth=1 origin "$SOURCE_SHA" 2>/dev/null; then
+            echo "server refused a direct SHA fetch; fetching refs and checking out the pin"
+            git -C "$dest" fetch --quiet --filter=blob:none origin '+refs/heads/*:refs/remotes/origin/*'
+          fi
+          if ! git -C "$dest" cat-file -e "${SOURCE_SHA}^{commit}" 2>/dev/null; then
+            echo "::error title=Pinned source commit is unreachable::${SOURCE_SHA} is not in ${SOURCE_REPO}. Fix env.SOURCE_SHA; do not fall back to a branch."
             exit 1
           fi
-          git -C "$dest" sparse-checkout set "$SOURCE_PACK"
+          git -C "$dest" -c advice.detachedHead=false checkout --quiet "$SOURCE_SHA"
+
+          # The pin is only meaningful if what was checked out is what was asked
+          # for. A checkout that silently landed on the branch tip is exactly the
+          # failure this whole job exists to prevent.
+          actual="$(git -C "$dest" rev-parse HEAD)"
+          if [ "$actual" != "$SOURCE_SHA" ]; then
+            echo "::error title=Wrong source commit::asked for ${SOURCE_SHA}, got ${actual}."
+            exit 1
+          fi
+
           if [ ! -f "$dest/$SOURCE_PACK/pack.mcmeta" ]; then
-            echo "::error title=Source pack missing::${SOURCE_PACK} was moved or renamed upstream."
+            echo "::error title=Source pack missing::${SOURCE_PACK} does not exist at ${SOURCE_SHA}. The path moved after the pin was written."
             exit 1
           fi
+
           echo "SOURCE_DIR=$dest/$SOURCE_PACK" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$actual" >> "$GITHUB_ENV"
+          echo "resolved source ${SOURCE_REPO}@${actual}"
 
       - name: Set up JDK
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
@@ -135,10 +176,9 @@ jobs:
             ls -1 build/dist
             exit 1
           fi
-          if [ "$total" -lt 20 ]; then
-            echo "::error title=Missing packs::expected 20 jars, found ${total}."
-            exit 1
-          fi
+          # The count itself is deliberately not asserted here: a fixed floor
+          # cannot know how many modules exist. What the release must contain is
+          # decided by check_manifest_parity.py against modules.json below.
           # pack.mcmeta is what the game reads, so it must agree with the filename.
           for jar in build/dist/*.jar; do
             meta="$(unzip -p "$jar" pack.mcmeta)"
@@ -148,6 +188,15 @@ jobs:
             fi
           done
           echo "${total} jars, all carrying ${VERSION}"
+
+      - name: Every declared module is in the release
+        # The old gate here was `[ "$total" -lt 20 ]`, a fixed floor that had to
+        # be right forever. It was right at 20 modules, wrong at 34, and could
+        # never notice a module that failed to build as long as twenty others
+        # succeeded. The expectation now comes from modules.json and the two sets
+        # are compared exactly - a release with 33 of 34 modules is a broken
+        # release whether or not the count clears a threshold.
+        run: python3 tools/check_manifest_parity.py --dist build/dist --manifest modules.json
 
       - name: Checksums
         # A consumer who downloads a jar has no way to know it is the one that was
@@ -163,12 +212,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_COMMIT: ${{ env.SOURCE_COMMIT }}
         run: |
           set -euo pipefail
 
           notes_file="$RUNNER_TEMP/notes.md"
+          MODULE_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open("modules.json"))["modules"]))')"
           {
-            echo "macroEngine **${VERSION}** — one core pack plus 19 modules."
+            echo "macroEngine **${VERSION}** — one core module plus $((MODULE_COUNT - 1)) modules."
             echo
             python3 tools/summarize.py modules.json \
               --source "${SOURCE_REPO}/${SOURCE_PACK}"
@@ -190,6 +241,12 @@ jobs:
             echo "the hook tags in \`data/me_core_module/tags/function/hook/\`."
             echo
             echo "Verify a download against \`SHA256SUMS.txt\`."
+            echo
+            echo "### Provenance"
+            echo
+            echo "Built from \`${SOURCE_REPO}\` at commit \`${SOURCE_COMMIT}\`, pack"
+            echo "\`${SOURCE_PACK}\`. The source commit is pinned in the release"
+            echo "workflow, so rebuilding this tag fetches the same bytes."
           } > "$notes_file"
 
           # `--verify-tag` makes a manual run fail rather than silently creating
